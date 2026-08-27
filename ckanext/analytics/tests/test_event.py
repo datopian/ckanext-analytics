@@ -215,6 +215,49 @@ def test_the_ip_falls_back_to_the_peer_for_a_direct_call(client, recorded):
     assert recorded[0]["request_ip"] == "127.0.0.1"
 
 
+def test_a_request_with_the_ignore_header_is_not_recorded(client, recorded, monkeypatch):
+    monkeypatch.setattr(event, "IGNORE_HEADER", "Request-Source")
+    monkeypatch.setattr(event, "IGNORE_VALUES", frozenset({"data-explorer"}))
+
+    client.get("/api/3/action/package_show", headers={"Request-Source": "data-explorer"})
+
+    assert recorded == []
+
+
+def test_the_ignore_header_match_is_case_insensitive(client, recorded, monkeypatch):
+    monkeypatch.setattr(event, "IGNORE_HEADER", "Request-Source")
+    monkeypatch.setattr(event, "IGNORE_VALUES", frozenset({"data-explorer"}))
+
+    client.get("/api/3/action/package_show", headers={"request-source": "Data-Explorer"})
+
+    assert recorded == []
+
+
+def test_a_request_without_the_ignore_header_is_still_recorded(client, recorded, monkeypatch):
+    monkeypatch.setattr(event, "IGNORE_HEADER", "Request-Source")
+    monkeypatch.setattr(event, "IGNORE_VALUES", frozenset({"data-explorer"}))
+
+    client.get("/api/3/action/package_show")
+
+    assert len(recorded) == 1
+
+
+def test_a_request_with_a_different_header_value_is_still_recorded(client, recorded, monkeypatch):
+    monkeypatch.setattr(event, "IGNORE_HEADER", "Request-Source")
+    monkeypatch.setattr(event, "IGNORE_VALUES", frozenset({"data-explorer"}))
+
+    client.get("/api/3/action/package_show", headers={"Request-Source": "some-other-tool"})
+
+    assert len(recorded) == 1
+
+
+def test_the_ignore_check_is_disabled_when_unconfigured(client, recorded):
+    """Default (module-level IGNORE_HEADER/IGNORE_VALUES empty) never skips."""
+    client.get("/api/3/action/package_show", headers={"Request-Source": "data-explorer"})
+
+    assert len(recorded) == 1
+
+
 def test_user_agent_is_none_when_the_client_sends_none(client, recorded):
     client.get("/api/3/action/package_show", headers={"User-Agent": ""})
 

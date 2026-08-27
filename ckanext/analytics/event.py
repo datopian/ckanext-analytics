@@ -10,6 +10,10 @@ Both attempted and successful calls are recorded. ``status_code`` tells them apa
 which is why this hangs off ``request_finished`` and not ``action_succeeded`` - the
 latter fires only on success, so every 403, 409 and 500 would be missing.
 
+A request carrying the configured ignore header/value (``CKANEXT_ANALYTICS_IGNORE_HEADER``
+/ ``CKANEXT_ANALYTICS_IGNORE_VALUES``) is skipped entirely - not logged with a
+distinguishing field, just never recorded.
+
 ``Attribution`` holds the rules, ``RequestEvent`` turns a request into a dict, and
 ``record_request`` is the listener CKAN calls. Flask only, no CKAN import, so the
 whole lifecycle can be driven against a stub app and the real signal.
@@ -35,6 +39,18 @@ api = logging.getLogger("analytics.event")
 
 #: Named in every event, so one stream can carry more than one service.
 SERVICE = os.environ.get("CKANEXT_ANALYTICS_SERVICE", "ckan")
+
+#: A request whose ``IGNORE_HEADER`` value is in ``IGNORE_VALUES`` skips
+#: analytics entirely - not logged with a distinguishing field, just never
+#: recorded. Known internal callers (e.g. the data explorer) set this so
+#: their UI-driven traffic never counts as API usage. Either empty disables
+#: the check. Comma-separated, matched case-insensitively.
+IGNORE_HEADER = os.environ.get("CKANEXT_ANALYTICS_IGNORE_HEADER", "")
+IGNORE_VALUES = frozenset(
+    v.strip().lower()
+    for v in os.environ.get("CKANEXT_ANALYTICS_IGNORE_VALUES", "").split(",")
+    if v.strip()
+)
 
 
 class Attribution:
@@ -152,7 +168,17 @@ class RequestEvent:
             request.endpoint
         ):
             return None
+        if cls.is_ignored(request):
+            return None
         return cls(request, response)
+
+    @staticmethod
+    def is_ignored(request: Any) -> bool:
+        """Whether ``IGNORE_HEADER`` / ``IGNORE_VALUES`` say to skip this request."""
+        if not IGNORE_HEADER or not IGNORE_VALUES:
+            return False
+        value = request.headers.get(IGNORE_HEADER)
+        return value is not None and value.strip().lower() in IGNORE_VALUES
 
     @staticmethod
     def is_download_endpoint(endpoint: str | None) -> bool:
