@@ -11,8 +11,10 @@ which is why this hangs off ``request_finished`` and not ``action_succeeded`` - 
 latter fires only on success, so every 403, 409 and 500 would be missing.
 
 A request carrying the configured ignore header/value (``CKANEXT_ANALYTICS_IGNORE_HEADER``
-/ ``CKANEXT_ANALYTICS_IGNORE_VALUES``) is skipped entirely - not logged with a
-distinguishing field, just never recorded.
+/ ``CKANEXT_ANALYTICS_IGNORE_VALUES``), or arriving from a configured ignore IP
+(``CKANEXT_ANALYTICS_IGNORE_IPS``, a weaker fallback for callers that cannot yet
+set the header), is skipped entirely - not logged with a distinguishing field,
+just never recorded.
 
 ``Attribution`` holds the rules, ``RequestEvent`` turns a request into a dict, and
 ``record_request`` is the listener CKAN calls. Flask only, no CKAN import, so the
@@ -49,6 +51,17 @@ IGNORE_HEADER = os.environ.get("CKANEXT_ANALYTICS_IGNORE_HEADER", "")
 IGNORE_VALUES = frozenset(
     v.strip().lower()
     for v in os.environ.get("CKANEXT_ANALYTICS_IGNORE_VALUES", "").split(",")
+    if v.strip()
+)
+
+#: A request from one of these source IPs skips analytics the same way -
+#: a fallback for callers that cannot yet set the header above (e.g. a
+#: frontend's static egress IPs). Weaker than the header check: an IP can
+#: change on redeploy or scaling without anyone updating this list. Empty
+#: disables the check.
+IGNORE_IPS = frozenset(
+    v.strip()
+    for v in os.environ.get("CKANEXT_ANALYTICS_IGNORE_IPS", "").split(",")
     if v.strip()
 )
 
@@ -172,13 +185,32 @@ class RequestEvent:
             return None
         return cls(request, response)
 
+    @classmethod
+    def is_ignored(cls, request: Any) -> bool:
+        """Whether the ignore header/value or the ignore IP say to skip this
+        request. Either check alone is enough."""
+        if IGNORE_HEADER and IGNORE_VALUES:
+            value = request.headers.get(IGNORE_HEADER)
+            if value is not None and value.strip().lower() in IGNORE_VALUES:
+                return True
+        if IGNORE_IPS:
+            if cls._request_ip(request) in IGNORE_IPS:
+                return True
+        return False
+
     @staticmethod
-    def is_ignored(request: Any) -> bool:
-        """Whether ``IGNORE_HEADER`` / ``IGNORE_VALUES`` say to skip this request."""
-        if not IGNORE_HEADER or not IGNORE_VALUES:
-            return False
-        value = request.headers.get(IGNORE_HEADER)
-        return value is not None and value.strip().lower() in IGNORE_VALUES
+    def _request_ip(request: Any) -> str | None:
+        """Same resolution rules as the ``request_ip`` property, but callable
+        before an instance exists (``is_ignored`` runs before construction)."""
+        real_ip = request.headers.get(RequestEvent.REAL_IP_HEADER)
+        if real_ip:
+            return real_ip.strip() or None
+
+        forwarded = request.headers.get(RequestEvent.FORWARDED_FOR_HEADER)
+        if forwarded:
+            return forwarded.rsplit(",", 1)[-1].strip() or None
+
+        return request.remote_addr
 
     @staticmethod
     def is_download_endpoint(endpoint: str | None) -> bool:
@@ -261,15 +293,7 @@ class RequestEvent:
         ``X-Forwarded-For`` and be believed. Fine for analytics, not for access
         control.
         """
-        real_ip = self.request.headers.get(self.REAL_IP_HEADER)
-        if real_ip:
-            return real_ip.strip() or None
-
-        forwarded = self.request.headers.get(self.FORWARDED_FOR_HEADER)
-        if forwarded:
-            return forwarded.rsplit(",", 1)[-1].strip() or None
-
-        return self.request.remote_addr
+        return self._request_ip(self.request)
 
     def params(self) -> dict[str, Any]:
         """Entity references the caller sent, wherever they put them.
