@@ -251,8 +251,37 @@ def test_a_request_with_a_different_header_value_is_still_recorded(client, recor
     assert len(recorded) == 1
 
 
+def test_a_request_from_an_ignored_ip_is_not_recorded(client, recorded, monkeypatch):
+    monkeypatch.setattr(event, "IGNORE_IPS", frozenset({"54.247.74.82", "63.32.18.228"}))
+
+    client.get("/api/3/action/package_show", headers={"X-Real-IP": "54.247.74.82"})
+
+    assert recorded == []
+
+
+def test_a_request_from_a_different_ip_is_still_recorded(client, recorded, monkeypatch):
+    monkeypatch.setattr(event, "IGNORE_IPS", frozenset({"54.247.74.82", "63.32.18.228"}))
+
+    client.get("/api/3/action/package_show", headers={"X-Real-IP": "203.0.113.7"})
+
+    assert len(recorded) == 1
+
+
+def test_the_header_and_ip_checks_are_independent(client, recorded, monkeypatch):
+    """Either check alone is enough to skip - a request doesn't need to
+    match both."""
+    monkeypatch.setattr(event, "IGNORE_HEADER", "Request-Source")
+    monkeypatch.setattr(event, "IGNORE_VALUES", frozenset({"data-explorer"}))
+    monkeypatch.setattr(event, "IGNORE_IPS", frozenset({"54.247.74.82"}))
+
+    client.get("/api/3/action/package_show", headers={"X-Real-IP": "54.247.74.82"})
+
+    assert recorded == []
+
+
 def test_the_ignore_check_is_disabled_when_unconfigured(client, recorded):
-    """Default (module-level IGNORE_HEADER/IGNORE_VALUES empty) never skips."""
+    """Default (module-level IGNORE_HEADER/IGNORE_VALUES/IGNORE_IPS empty)
+    never skips."""
     client.get("/api/3/action/package_show", headers={"Request-Source": "data-explorer"})
 
     assert len(recorded) == 1
