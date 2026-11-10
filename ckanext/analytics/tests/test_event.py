@@ -93,6 +93,26 @@ def download_blueprint(name: str, url_prefix: str) -> Blueprint:
     return blueprint
 
 
+def resource_metadata_download(resource_id: str):
+    """Stands in for the ``neso_resource_metadata`` blueprint's view.
+
+    The real view returns the ``resource_metadata_show`` record as CSV or JSON;
+    for the lifecycle test the body does not matter.
+    """
+    if resource_id == "missing":
+        return "not found", 404
+    return "record bytes"
+
+
+def metadata_blueprint() -> Blueprint:
+    """Mirror the real blueprint registered by ckanext-neso."""
+    blueprint = Blueprint("neso_resource_metadata", __name__)
+    blueprint.add_url_rule(
+        "/resource/<resource_id>/metadata", view_func=resource_metadata_download
+    )
+    return blueprint
+
+
 @pytest.fixture
 def client(recorded):
     # static_folder=None: Flask would otherwise own the "static" endpoint.
@@ -113,6 +133,7 @@ def client(recorded):
     app.register_blueprint(s3)
     app.register_blueprint(download_blueprint("dataset_resource", "/dataset/<id>/resource"))
     app.register_blueprint(download_blueprint("resource", "/custom/<id>/resource"))
+    app.register_blueprint(metadata_blueprint())
 
     @app.route("/dataset/costs-2026")
     def page():
@@ -441,6 +462,9 @@ def test_a_filesystem_fallback_download_is_recorded(client, recorded):
         "showcase_resource.download",  # a custom IDatasetForm package type
         "s3_resource.download",  # ckanext-s3filestore override
         "s3_resource.filesystem_resource_download",  # its on-disk fallback
+        # The metadata download, served by its own blueprint rather than a
+        # ``*resource`` one, so it is recognised by view name.
+        "neso_resource_metadata.resource_metadata_download",
     ],
 )
 def test_download_endpoints_are_recognised_wherever_they_come_from(endpoint):
@@ -448,6 +472,35 @@ def test_download_endpoints_are_recognised_wherever_they_come_from(endpoint):
     so downloads are recognised by shape - a resource blueprint's download
     view - not by a list of names."""
     assert event.RequestEvent.is_download_endpoint(endpoint)
+
+
+def test_a_metadata_download_is_recorded_as_its_own_action(client, recorded):
+    """The metadata endpoint is a separate action, so file downloads and
+    metadata downloads can be told apart in a report."""
+    client.get("/resource/res-uuid/metadata?format=csv")
+
+    assert len(recorded) == 1
+    recorded_event = recorded[0]
+    assert set(recorded_event) == FIELDS
+    assert recorded_event["action_type"] == "resource_metadata_download"
+    assert recorded_event["endpoint"] == "/resource/res-uuid/metadata"
+    assert recorded_event["query_string"] == "format=csv"
+    assert recorded_event["status_code"] == 200
+
+
+def test_a_metadata_download_is_attributed_to_the_resource(client, recorded):
+    """The URL names the resource, so attribution does not need a lookup."""
+    client.get("/resource/res-uuid/metadata?format=csv")
+
+    assert recorded[0]["resource"] == "res-uuid"
+
+
+def test_a_refused_metadata_download_is_recorded_with_its_status(client, recorded):
+    response = client.get("/resource/missing/metadata?format=csv")
+
+    assert response.status_code == 404
+    assert recorded[0]["action_type"] == "resource_metadata_download"
+    assert recorded[0]["status_code"] == 404
 
 
 @pytest.mark.parametrize(

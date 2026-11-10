@@ -157,8 +157,13 @@ class RequestEvent:
     #: else - pages, static files, health checks - is excluded by definition.
     API_ENDPOINT = "api.action"
 
-    #: What every download event is called, whichever endpoint served it.
+    #: What a file download event is called, whichever blueprint served it.
     DOWNLOAD_ACTION = "resource_download"
+
+    #: What a resource-metadata download event is called. The metadata view lives
+    #: on its own blueprint (``neso_resource_metadata``) and returns the record as
+    #: CSV or JSON, so it is recognised and named separately from a file download.
+    METADATA_DOWNLOAD_ACTION = "resource_metadata_download"
 
     #: nginx-ingress logs this as ``requestID`` and passes the same value upstream, so
     #: a CKAN event and its nginx line share an id. Also the natural dedup key.
@@ -215,11 +220,25 @@ class RequestEvent:
     @staticmethod
     def is_download_endpoint(endpoint: str | None) -> bool:
         """A resource blueprint's download view, whoever provides it.
+
+        Covers both the file download (``.../resource.download``) and the metadata
+        download (``neso_resource_metadata.resource_metadata_download``), so one
+        check gates both.
         """
         if not endpoint or "." not in endpoint:
             return False
         blueprint, _, view = endpoint.rpartition(".")
-        return blueprint.endswith("resource") and view.endswith("download")
+        if blueprint.endswith("resource") and view.endswith("download"):
+            return True
+        return view == RequestEvent.METADATA_DOWNLOAD_ACTION
+
+    @staticmethod
+    def is_metadata_download_endpoint(endpoint: str | None) -> bool:
+        """The resource-metadata download view, served by its own blueprint."""
+        if not endpoint or "." not in endpoint:
+            return False
+        _, _, view = endpoint.rpartition(".")
+        return view == RequestEvent.METADATA_DOWNLOAD_ACTION
 
 
     def as_dict(self) -> dict[str, Any]:
@@ -242,11 +261,15 @@ class RequestEvent:
 
     @property
     def action_type(self) -> str | None:
-        """The action name, or ``resource_download`` for a download.
+        """The action name, or a download label for a download.
 
         For ``api.action`` the endpoint is the same constant for every action, so the
         name has to come from the URL. ``view_args`` is None on some error paths.
+        A metadata download is labelled separately so the two kinds of download can
+        be told apart in reports.
         """
+        if self.is_metadata_download_endpoint(self.request.endpoint):
+            return self.METADATA_DOWNLOAD_ACTION
         if self.is_download_endpoint(self.request.endpoint):
             return self.DOWNLOAD_ACTION
 
